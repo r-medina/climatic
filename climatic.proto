@@ -1,0 +1,15 @@
+syntax = "proto3";
+
+package climatic;
+
+service Mixer {
+    rpc Register(RegisterRequest) returns (RegisterResponse);
+}
+
+message RegisterRequest {
+    repeated string addresses = 1;
+}
+
+message RegisterResponse {
+    string address = 1;
+}
