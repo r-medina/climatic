@@ -144,7 +144,7 @@ func TestPostTransaction(t *testing.T) {
 			)
 			testClient := NewClimaticClient(WithAPIAddress(server.URL))
 
-			err := testClient.PostTransaction(&Transaction{Timestamp: time.Now()})
+			err := testClient.PostTransaction("a", "b", 1.)
 			if err != nil {
 				if want, got := test.errStr, err.Error(); !reflect.DeepEqual(got, want) {
 					t.Fatalf("expected %v, got %v", want, got)

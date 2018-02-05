@@ -19,7 +19,7 @@ type Client interface {
 	// GetTransactions returns all the transactions in the jobcoin history.
 	GetTransactions() ([]*Transaction, error)
 	// PostTransaction sends jobcoin.
-	PostTransaction(*Transaction) error
+	PostTransaction(fromAddr, toAddr string, amt float64) error
 }
 
 // AddressInfo contains all the data relating to a Jobcoin address.
@@ -120,16 +120,24 @@ func (cli *ClimaticClient) GetTransactions() ([]*Transaction, error) {
 }
 
 // PostTransaction sends jobcoin.
-func (cli *ClimaticClient) PostTransaction(tx *Transaction) error {
+func (cli *ClimaticClient) PostTransaction(fromAddr, toAdddr string, amt float64) error {
 	body := &bytes.Buffer{}
 	encoder := json.NewEncoder(body)
-	err := encoder.Encode(tx)
+	err := encoder.Encode(struct {
+		FromAddress string  `json:"fromAddress"`
+		ToAddress   string  `json:"toAddress"`
+		Amount      float64 `json:"amount,string"`
+	}{
+		FromAddress: fromAddr,
+		ToAddress:   toAdddr,
+		Amount:      amt,
+	})
 	if err != nil {
 		return err
 	}
 
 	req, err := http.NewRequest(
-		"GET", fmt.Sprintf("%s/transactions", cli.apiAddr), body,
+		"POST", fmt.Sprintf("%s/transactions", cli.apiAddr), body,
 	)
 	if err != nil {
 		return err
