@@ -4,8 +4,6 @@ import (
 	"math"
 	"math/rand"
 	"time"
-
-	"github.com/r-medina/climatic/jobcoin"
 )
 
 // PollConfig configures the polling loop in the Mixer.
@@ -121,9 +119,4 @@ func norm(mean, stdDev, min, max float64) float64 {
 	n = math.Min(max, n)
 
 	return n
-}
-
-type mixRequest struct {
-	tx       *jobcoin.Transaction
-	usrAddrs []string
 }

@@ -4,8 +4,11 @@ import "sync"
 
 // Datastore contains the functions necessary from a datastore for the Mixer
 type Datastore interface {
+	// Register registers a deposit address with the associated user addresses.
 	Register(depositAddr string, usrAddrs []string) error
+	// DepositAddresses lists all the deposit addresses.
 	DepositAddresses() ([]string, error)
+	// UserAddresses lists all the user addresses for a given deposit address.
 	UserAddresses(depositAddr string) ([]string, error)
 }
 

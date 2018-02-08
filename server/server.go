@@ -6,7 +6,6 @@ import (
 	"log"
 	"math/rand"
 	"os"
-	"strconv"
 	"sync"
 	"time"
 
@@ -147,7 +146,10 @@ func (mxr *Mixer) Register(
 func (mxr *Mixer) Start() error {
 	l := mxr.log
 
+	wg := sync.WaitGroup{}
+	wg.Add(2)
 	go func() {
+		defer wg.Done()
 		for {
 			l.Printf("running poll")
 			if err := mxr.poll(); err != nil {
@@ -158,14 +160,21 @@ func (mxr *Mixer) Start() error {
 		}
 	}()
 
-	for {
-		l.Printf("running mix")
-		if err := mxr.mix(); err != nil {
-			l.Printf("mix failed: %v", err)
-		}
+	go func() {
+		defer wg.Done()
+		for {
+			l.Printf("running mix")
+			if err := mxr.mix(); err != nil {
+				l.Printf("mix failed: %v", err)
+			}
 
-		<-time.After(mxr.mixCfg.delay())
-	}
+			<-time.After(mxr.mixCfg.delay())
+		}
+	}()
+
+	wg.Wait()
+
+	return nil
 }
 
 func (mxr *Mixer) poll() error {
@@ -198,40 +207,43 @@ func (mxr *Mixer) poll() error {
 	// add the new requested mixes after a delay
 	go func() {
 		<-time.After(mxr.mixCfg.InitialDelay)
-
-		mxr.mtx.Lock()
-		defer mxr.mtx.Unlock()
-
-		for _, mixReq := range mixReqs {
-			m, ok := mxr.outstanding[mixReq.tx.ToAddress]
-			if ok {
-				m.inputTxs = append(m.inputTxs, mixReq.tx)
-				_, err := mxr.updateRemaining(mixReq.tx.ToAddress, &m.remaining)
-				if err != nil {
-					l.Printf("failed to update remaining: %v", err)
-				}
-				continue
-			}
-
-			mxr.outstanding[mixReq.tx.ToAddress] = &mix{
-				inputTxs:  []*jobcoin.Transaction{mixReq.tx},
-				mixed:     []*jobcoin.Transaction{},
-				usrAddrs:  mixReq.usrAddrs,
-				remaining: mixReq.tx.Amount,
-			}
-		}
+		mxr.makeMix(mixReqs)
 	}()
 
 	return nil
 }
 
+// makeMix takes mix requests and adds them to the queue of Jobcoins to be mixed.
+// This function was broken out for testing purposes.
+func (mxr *Mixer) makeMix(mixReqs []mixRequest) {
+	mxr.mtx.Lock()
+	defer mxr.mtx.Unlock()
+
+	for _, mixReq := range mixReqs {
+		m, ok := mxr.outstanding[mixReq.tx.ToAddress]
+		if ok {
+			m.remaining += mixReq.tx.Amount
+			continue
+		}
+
+		mxr.outstanding[mixReq.tx.ToAddress] = &mix{
+			usrAddrs:  mixReq.usrAddrs,
+			remaining: mixReq.tx.Amount,
+		}
+	}
+}
+
+// mix does the mixing. This function assumes that no other rthreads are
+// spending Jobcoins in the deposit addresses mxr knows about.
 func (mxr *Mixer) mix() error {
 	l := mxr.log
 
-	// for formatting floats as strings as precisely as possible
-
 	mxr.mtx.Lock()
 	defer mxr.mtx.Unlock()
+
+	//
+	// The first few blocks are for selecting a mix request to send part of.
+	//
 
 	// if there are no outstanding things to be mixed, exit
 	if len(mxr.outstanding) < 1 {
@@ -248,86 +260,129 @@ func (mxr *Mixer) mix() error {
 		i--
 	}
 	m := mxr.outstanding[addr]
-	// if no user addresses regitered, exit
+	// If no user addresses regitered, exit. This case should never get hit,
+	// but the state is possible.
 	if len(m.usrAddrs) < 1 {
 		return nil
 	}
 
-	// TODO: fee larger than amount
+	// Tick a random user address to send the amount to. This is selected
+	// here so that the rest of the function is deterministic.
+	usrAddr := m.usrAddrs[rand.Intn(len(m.usrAddrs))]
+
+	//
+	// The rest of the function collects the fee and sends mixed Jobcoins.
+	//
+
+	l.Printf("mixing %v", addr)
+
+	// prevents a class of rounding error
+	defer func() {
+		del, err := mxr.updateRemaining(addr, m)
+		if err != nil {
+			l.Printf("failed to update remaining: %v", err)
+		}
+		if del {
+			delete(mxr.outstanding, addr)
+		}
+	}()
 
 	// collect fee
 	if mxr.fee == 0 {
 		m.feePaid = true
 	}
 	if !m.feePaid {
-		fee := climatic.Ftos(mxr.fee)
-		// send fee from deposit address to mixer address
-		err := mxr.jcClient.PostTransaction(addr, mxr.addr, fee)
-		if err != nil {
-			l.Printf("error collecting fee: %v", err)
-		} else {
-			m.feePaid = true
-			_, err := mxr.updateRemaining(addr, &m.remaining)
-			if err != nil {
-				return err
-			}
+		l.Printf("collecting fee")
+		if err := mxr.getFee(m, addr); err != nil {
+			return err
 		}
 	}
 
-	remaining, err := strconv.ParseFloat(m.remaining, 64)
-	if err != nil {
-		return err
-	}
-	amt := mxr.mixCfg.amount()
-	if amt > remaining {
-		amt = remaining
-	}
-	if amt == 0 {
-		return nil
-	}
+	return mxr.sendMix(m, addr, usrAddr)
+}
 
-	usrAddr := m.usrAddrs[rand.Intn(len(m.usrAddrs))]
-	l.Printf("mixing from %v to %v with amount %f", addr, usrAddr, amt)
-	if amt == remaining {
-		err = mxr.jcClient.PostTransaction(addr, usrAddr, m.remaining)
-	} else {
-		err = mxr.jcClient.PostTransaction(addr, usrAddr, climatic.Ftos(amt))
-	}
+// updateRemaining gets the API's view of the remaining balance and updates
+// it. It also returns of the mix request should be deleted.
+func (mxr *Mixer) updateRemaining(addr string, m *mix) (bool, error) {
+	l := mxr.log
+
+	remaining, err := mxr.getRemaining(addr)
 	if err != nil {
-		return err
-	}
-	remaining, err = mxr.updateRemaining(addr, &m.remaining)
-	if err != nil {
-		return err
+		l.Printf("failed to get remaining: %v", err)
+		return false, err
 	}
 	if remaining == 0 {
-		// TODO: save in another data structure rather than delete
-		l.Printf("done mixing %v: %+v", addr, m.inputTxs)
-		delete(mxr.outstanding, addr)
+		l.Printf("done mixing %v", addr)
+		return true, nil
+	}
+
+	return false, nil
+}
+
+func (mxr *Mixer) getFee(m *mix, addr string) error {
+	l := mxr.log
+
+	// if the fee is larger than the amount to be mixed, just use the remaining amount
+	fee := mxr.fee
+	if mxr.fee > m.remaining {
+		fee = m.remaining
+		l.Printf("reduced fee: %f", fee)
+	}
+
+	// send fee from deposit address to mixer address
+	err := mxr.jcClient.PostTransaction(addr, mxr.addr, fee)
+	if err != nil {
+		return err
+	}
+
+	m.feePaid = true
+	m.remaining -= fee
+
+	return nil
+}
+
+func (mxr *Mixer) sendMix(m *mix, addr, usrAddr string) error {
+	l := mxr.log
+
+	// if the amount is greater than the total remaining, only mix the remaining
+	amt := mxr.mixCfg.amount()
+	if amt > m.remaining {
+		amt = m.remaining
+	}
+
+	if amt != 0 {
+		// There's a small chance that the rest of this function will
+		// fail due to a discrepancy between our internal accounting and
+		// the balance on the server. The next time this address is
+		// mixed, it will work due to the updated remaining amount.
+
+		l.Printf("mixing from %v to %v with amount %s", addr, usrAddr, climatic.Ftos(amt))
+		err := mxr.jcClient.PostTransaction(addr, usrAddr, amt)
+		if err != nil {
+			return err
+		}
+		m.remaining -= amt
 	}
 
 	return nil
 }
 
-// updateRemaining updates the remaining amount and returns a float64 of it.
-func (mxr *Mixer) updateRemaining(addr string, remaining *string) (float64, error) {
+func (mxr *Mixer) getRemaining(addr string) (float64, error) {
 	addrInfo, err := mxr.jcClient.GetAddressInfo(addr)
-	if err != nil {
-		return -0, err
-	}
-	*remaining = addrInfo.Balance
-	out, err := strconv.ParseFloat(addrInfo.Balance, 64)
 	if err != nil {
 		return 0, err
 	}
+	return addrInfo.Balance, nil
 
-	return out, nil
 }
 
 type mix struct {
-	inputTxs  []*jobcoin.Transaction
-	mixed     []*jobcoin.Transaction
 	usrAddrs  []string
-	remaining string
+	remaining float64
 	feePaid   bool
+}
+
+type mixRequest struct {
+	tx       *jobcoin.Transaction
+	usrAddrs []string
 }

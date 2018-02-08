@@ -100,8 +100,8 @@ func sendJobcoins(*kingpin.ParseContext) error {
 	fromAddr := config.send.fromAddr
 	toAddr := config.send.toAddr
 	amt := config.send.amt
-	fmt.Printf("sending %.5f Jobcoins from %v to %v\n", amt, fromAddr, toAddr)
-	err := config.jcClient.PostTransaction(fromAddr, toAddr, climatic.Ftos(amt))
+	fmt.Printf("sending %s Jobcoins from %v to %v\n", climatic.Ftos(amt), fromAddr, toAddr)
+	err := config.jcClient.PostTransaction(fromAddr, toAddr, amt)
 	app.FatalIfError(err, "could not send jobcoins")
 
 	return nil
