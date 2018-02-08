@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"google.golang.org/grpc"
 
 	"github.com/r-medina/climatic"
+	"github.com/r-medina/climatic/jobcoin"
 
 	kingpin "gopkg.in/alecthomas/kingpin.v2"
 )
@@ -20,9 +22,20 @@ var config struct {
 		addrs      []string
 	}
 
-	mix struct {
-		// jobcoin address
-		mxrAddr string
+	jcClient jobcoin.Client
+
+	send struct {
+		fromAddr string
+		toAddr   string
+		amt      float64
+	}
+
+	addrInfo struct {
+		addr string
+	}
+
+	create struct {
+		addr string
 	}
 }
 
@@ -32,9 +45,24 @@ var (
 
 func init() {
 	register := app.Command("register", "register your addresses with a mixer").Action(registerAddrs)
-	register.Arg("mixer-ip-addr", "TCP address for mixer service").TCPVar(&config.register.mxrTCPAddr)
-	register.Arg("addrs", "deposit addresses for you to receive your jobcoins").
+	register.Arg("mixer-tcp-addr", "TCP address for mixer service").Required().
+		TCPVar(&config.register.mxrTCPAddr)
+	register.Arg("addrs", "deposit addresses for you to receive your Jobcoins").Required().
 		StringsVar(&config.register.addrs)
+
+	send := app.Command("send", "send Jobcoins from an address to an address").
+		PreAction(getJobcoinClient).Action(sendJobcoins)
+	send.Arg("from-addr", "address from which to send Jobcoins").Required().StringVar(&config.send.fromAddr)
+	send.Arg("to-addr", "address to which to send Jobcoins").Required().StringVar(&config.send.toAddr)
+	send.Arg("amount", "amount of Jobcoins to send").Required().FloatVar(&config.send.amt)
+
+	addrInfo := app.Command("addr-info", "get information about an address").
+		PreAction(getJobcoinClient).Action(getAddrInfo)
+	addrInfo.Arg("addr", "address for which to lookup information").Required().StringVar(&config.addrInfo.addr)
+
+	create := app.Command("create", "create Jobcoins").PreAction(getJobcoinClient).
+		Action(createJobcoins)
+	create.Arg("addr", "address to send new Jobcoins").Required().StringVar(&config.create.addr)
 }
 
 func main() {
@@ -64,6 +92,43 @@ func registerAddrs(*kingpin.ParseContext) error {
 	app.FatalIfError(err, "registration failed")
 
 	fmt.Println(resp)
+
+	return nil
+}
+
+func sendJobcoins(*kingpin.ParseContext) error {
+	fromAddr := config.send.fromAddr
+	toAddr := config.send.toAddr
+	amt := config.send.amt
+	fmt.Printf("sending %.5f Jobcoins from %v to %v\n", amt, fromAddr, toAddr)
+	err := config.jcClient.PostTransaction(fromAddr, toAddr, climatic.Ftos(amt))
+	app.FatalIfError(err, "could not send jobcoins")
+
+	return nil
+}
+
+func getAddrInfo(*kingpin.ParseContext) error {
+	addr := config.addrInfo.addr
+	fmt.Printf("getting information about address %v\n", addr)
+	addrInfo, err := config.jcClient.GetAddressInfo(addr)
+	app.FatalIfError(err, "failed to get address info")
+	encoder := json.NewEncoder(os.Stdout)
+	encoder.SetIndent("", "\t")
+	app.FatalIfError(encoder.Encode(addrInfo), "could not serialize response")
+
+	return nil
+}
+
+func createJobcoins(*kingpin.ParseContext) error {
+	addr := config.create.addr
+	fmt.Printf("creating Jobcoins for address %v\n", addr)
+	app.FatalIfError(config.jcClient.Create(addr), "failed to create Jobcoins")
+
+	return nil
+}
+
+func getJobcoinClient(*kingpin.ParseContext) error {
+	config.jcClient = jobcoin.NewClimaticClient()
 
 	return nil
 }

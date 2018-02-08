@@ -2,8 +2,11 @@ package server
 
 import (
 	"context"
-	"math"
+	"encoding/json"
+	"log"
 	"math/rand"
+	"os"
+	"strconv"
 	"sync"
 	"time"
 
@@ -13,6 +16,7 @@ import (
 	"github.com/satori/go.uuid"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/grpclog"
 )
 
 func init() { rand.Seed(time.Now().UTC().UnixNano()) }
@@ -32,6 +36,8 @@ type Mixer struct {
 
 	pollCfg PollConfig
 	mixCfg  MixConfig
+
+	log grpclog.Logger
 }
 
 var _ climatic.MixerServer = (*Mixer)(nil)
@@ -50,6 +56,7 @@ func NewMixer(opts ...Option) (*Mixer, error) {
 		outstanding: map[string]*mix{},
 		pollCfg:     DefaultPollConfig,
 		mixCfg:      DefaultMixConfig,
+		log:         log.New(os.Stderr, "", log.LstdFlags),
 	}
 
 	for _, opt := range opts {
@@ -101,23 +108,35 @@ func WithMixConfig(mixCfg MixConfig) Option {
 	}
 }
 
+// WithLogger specifies the logger.
+func WithLogger(log grpclog.Logger) Option {
+	return func(mxr *Mixer) {
+		mxr.log = log
+	}
+}
+
 // Register allows the caller to register their addresses and receive a jobcoin
 // address to make deposits.
 func (mxr *Mixer) Register(
 	ctx context.Context, req *climatic.RegisterRequest,
 ) (*climatic.RegisterResponse, error) {
+	l := mxr.log
+	l.Printf("Register called: %v", *req)
+
 	depositAddr, err := uuid.NewV4()
 	if err != nil {
-		// TODO: log
+		l.Printf("could not make deposit addr: %v", err)
 		return nil, grpc.Errorf(codes.Internal, "could not generate deposit address")
 	}
+	l.Printf("deposit addr: %v", depositAddr)
 
 	if len(req.Addresses) == 0 {
+		l.Printf("addresses empty")
 		return nil, grpc.Errorf(codes.InvalidArgument, "addresses invalid")
 	}
 
 	if err := mxr.ds.Register(depositAddr.String(), req.Addresses); err != nil {
-		// TODO: log
+		l.Printf("could not register deposit addr: %v", err)
 		return nil, grpc.Errorf(codes.Internal, "could not register addresses")
 	}
 
@@ -126,10 +145,13 @@ func (mxr *Mixer) Register(
 
 // Start starts the threads that poll jobcoin and deposits the coins.
 func (mxr *Mixer) Start() error {
+	l := mxr.log
+
 	go func() {
 		for {
+			l.Printf("running poll")
 			if err := mxr.poll(); err != nil {
-				// TODO: log
+				l.Printf("poll failed: %v", err)
 			}
 
 			<-time.After(mxr.pollCfg.delay())
@@ -137,8 +159,9 @@ func (mxr *Mixer) Start() error {
 	}()
 
 	for {
+		l.Printf("running mix")
 		if err := mxr.mix(); err != nil {
-			// TODO: log
+			l.Printf("mix failed: %v", err)
 		}
 
 		<-time.After(mxr.mixCfg.delay())
@@ -146,6 +169,8 @@ func (mxr *Mixer) Start() error {
 }
 
 func (mxr *Mixer) poll() error {
+	l := mxr.log
+
 	txs, err := mxr.jcClient.GetTransactions()
 	if err != nil {
 		return err
@@ -158,11 +183,14 @@ func (mxr *Mixer) poll() error {
 
 	mixReqs := []mixRequest{}
 	for _, tx := range txs {
-		usrAddrs, err := mxr.ds.UserAddresses(tx.ToAddress)
-		if err != nil {
-			// TODO: log
+		usrAddrs, _ := mxr.ds.UserAddresses(tx.ToAddress)
+		if len(usrAddrs) == 0 {
 			continue
 		}
+
+		// for logging
+		buf, _ := json.Marshal(tx)
+		l.Printf("found transaction to mix: %v", string(buf))
 
 		mixReqs = append(mixReqs, mixRequest{tx: tx, usrAddrs: usrAddrs})
 	}
@@ -178,7 +206,10 @@ func (mxr *Mixer) poll() error {
 			m, ok := mxr.outstanding[mixReq.tx.ToAddress]
 			if ok {
 				m.inputTxs = append(m.inputTxs, mixReq.tx)
-				m.remaining += mixReq.tx.Amount
+				_, err := mxr.updateRemaining(mixReq.tx.ToAddress, &m.remaining)
+				if err != nil {
+					l.Printf("failed to update remaining: %v", err)
+				}
 				continue
 			}
 
@@ -186,7 +217,7 @@ func (mxr *Mixer) poll() error {
 				inputTxs:  []*jobcoin.Transaction{mixReq.tx},
 				mixed:     []*jobcoin.Transaction{},
 				usrAddrs:  mixReq.usrAddrs,
-				remaining: mixReq.tx.Amount - mxr.fee,
+				remaining: mixReq.tx.Amount,
 			}
 		}
 	}()
@@ -195,12 +226,19 @@ func (mxr *Mixer) poll() error {
 }
 
 func (mxr *Mixer) mix() error {
+	l := mxr.log
+
+	// for formatting floats as strings as precisely as possible
+
 	mxr.mtx.Lock()
 	defer mxr.mtx.Unlock()
 
+	// if there are no outstanding things to be mixed, exit
 	if len(mxr.outstanding) < 1 {
+		l.Printf("nothing to mix")
 		return nil
 	}
+	// select random mix request
 	i := rand.Intn(len(mxr.outstanding))
 	var addr string
 	for addr = range mxr.outstanding {
@@ -210,41 +248,86 @@ func (mxr *Mixer) mix() error {
 		i--
 	}
 	m := mxr.outstanding[addr]
-	fromAddr := m.inputTxs[0].FromAddress
-
-	amt := mxr.mixCfg.amount()
-	amt = math.Min(m.remaining, amt)
-
+	// if no user addresses regitered, exit
 	if len(m.usrAddrs) < 1 {
 		return nil
 	}
-	i = rand.Intn(len(m.usrAddrs))
-	err := mxr.jcClient.PostTransaction(fromAddr, m.usrAddrs[i], amt)
-	if err != nil {
-		return err
-	}
-	m.remaining -= amt
-	if m.remaining == 0 {
-		delete(mxr.outstanding, addr)
-	}
+
+	// TODO: fee larger than amount
 
 	// collect fee
+	if mxr.fee == 0 {
+		m.feePaid = true
+	}
 	if !m.feePaid {
-		err := mxr.jcClient.PostTransaction(fromAddr, mxr.addr, mxr.fee)
+		fee := climatic.Ftos(mxr.fee)
+		// send fee from deposit address to mixer address
+		err := mxr.jcClient.PostTransaction(addr, mxr.addr, fee)
 		if err != nil {
-			// TODO: log
+			l.Printf("error collecting fee: %v", err)
 		} else {
 			m.feePaid = true
+			_, err := mxr.updateRemaining(addr, &m.remaining)
+			if err != nil {
+				return err
+			}
 		}
 	}
 
+	remaining, err := strconv.ParseFloat(m.remaining, 64)
+	if err != nil {
+		return err
+	}
+	amt := mxr.mixCfg.amount()
+	if amt > remaining {
+		amt = remaining
+	}
+	if amt == 0 {
+		return nil
+	}
+
+	usrAddr := m.usrAddrs[rand.Intn(len(m.usrAddrs))]
+	l.Printf("mixing from %v to %v with amount %f", addr, usrAddr, amt)
+	if amt == remaining {
+		err = mxr.jcClient.PostTransaction(addr, usrAddr, m.remaining)
+	} else {
+		err = mxr.jcClient.PostTransaction(addr, usrAddr, climatic.Ftos(amt))
+	}
+	if err != nil {
+		return err
+	}
+	remaining, err = mxr.updateRemaining(addr, &m.remaining)
+	if err != nil {
+		return err
+	}
+	if remaining == 0 {
+		// TODO: save in another data structure rather than delete
+		l.Printf("done mixing %v: %+v", addr, m.inputTxs)
+		delete(mxr.outstanding, addr)
+	}
+
 	return nil
+}
+
+// updateRemaining updates the remaining amount and returns a float64 of it.
+func (mxr *Mixer) updateRemaining(addr string, remaining *string) (float64, error) {
+	addrInfo, err := mxr.jcClient.GetAddressInfo(addr)
+	if err != nil {
+		return -0, err
+	}
+	*remaining = addrInfo.Balance
+	out, err := strconv.ParseFloat(addrInfo.Balance, 64)
+	if err != nil {
+		return 0, err
+	}
+
+	return out, nil
 }
 
 type mix struct {
 	inputTxs  []*jobcoin.Transaction
 	mixed     []*jobcoin.Transaction
 	usrAddrs  []string
-	remaining float64
+	remaining string
 	feePaid   bool
 }

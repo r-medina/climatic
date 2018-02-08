@@ -103,7 +103,7 @@ var DefaultMixConfig = MixConfig{
 	StdDevDelay:  250 * time.Millisecond,
 	MinDelay:     50 * time.Millisecond,
 	MaxDelay:     3 * time.Second,
-	InitialDelay: 3 * time.Minute,
+	InitialDelay: 1 * time.Minute,
 
 	MeanAmount:   10.,
 	StdDevAmount: 8.,
@@ -117,8 +117,8 @@ func delay(delay, stdDev, min, max time.Duration) time.Duration {
 
 func norm(mean, stdDev, min, max float64) float64 {
 	n := rand.NormFloat64()*stdDev + mean
-	n = math.Min(min, n)
-	n = math.Max(max, n)
+	n = math.Max(min, n)
+	n = math.Min(max, n)
 
 	return n
 }

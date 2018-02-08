@@ -6,7 +6,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/pkg/errors"
@@ -19,12 +21,15 @@ type Client interface {
 	// GetTransactions returns all the transactions in the jobcoin history.
 	GetTransactions() ([]*Transaction, error)
 	// PostTransaction sends jobcoin.
-	PostTransaction(fromAddr, toAddr string, amt float64) error
+	PostTransaction(fromAddr, toAddr string, amt string) error
+	// Create creates 50 Jobcons out of thin air.
+	Create(addr string) error
 }
 
 // AddressInfo contains all the data relating to a Jobcoin address.
 type AddressInfo struct {
-	Balance      float64        `json:"balance,string"`
+	// Balance float64 `json:"balance,string"`
+	Balance      string         `json:"balance"`
 	Transactions []*Transaction `json:"transactions"`
 }
 
@@ -33,7 +38,8 @@ type Transaction struct {
 	Timestamp   time.Time `json:"time,string"`
 	FromAddress string    `json:"fromAddress"`
 	ToAddress   string    `json:"toAddress"`
-	Amount      float64   `json:"amount,string"`
+	// Amount      float64   `json:"amount,string"`
+	Amount string `json:"amount"`
 }
 
 // ClimaticClient uses the https://jobcoin.gemini.com/climatic/api.
@@ -47,7 +53,7 @@ var _ Client = (*ClimaticClient)(nil)
 // NewClimaticClient returns a Client implementation that uses the climatic API.
 func NewClimaticClient(opts ...Option) *ClimaticClient {
 	cli := &ClimaticClient{
-		apiAddr:    "http://jobcoin.gemini.com/climatic/api",
+		apiAddr:    "http://jobcoin.gemini.com/climatic",
 		httpClient: http.DefaultClient,
 	}
 	for _, opt := range opts {
@@ -77,7 +83,7 @@ func WithAPIAddress(apiAddr string) Option {
 
 // GetAddressInfo returns all the transactions and the balance for an address.
 func (cli *ClimaticClient) GetAddressInfo(addr string) (*AddressInfo, error) {
-	req, err := http.NewRequest("GET", fmt.Sprintf("%s/addresses/%s", cli.apiAddr, addr), nil)
+	req, err := http.NewRequest("GET", fmt.Sprintf("%s/api/addresses/%s", cli.apiAddr, addr), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -99,7 +105,7 @@ func (cli *ClimaticClient) GetAddressInfo(addr string) (*AddressInfo, error) {
 
 // GetTransactions returns all the transactions in the jobcoin history.
 func (cli *ClimaticClient) GetTransactions() ([]*Transaction, error) {
-	req, err := http.NewRequest("GET", fmt.Sprintf("%s/transactions", cli.apiAddr), nil)
+	req, err := http.NewRequest("GET", fmt.Sprintf("%s/api/transactions", cli.apiAddr), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -120,13 +126,14 @@ func (cli *ClimaticClient) GetTransactions() ([]*Transaction, error) {
 }
 
 // PostTransaction sends jobcoin.
-func (cli *ClimaticClient) PostTransaction(fromAddr, toAdddr string, amt float64) error {
+func (cli *ClimaticClient) PostTransaction(fromAddr, toAdddr, amt string) error {
 	body := &bytes.Buffer{}
 	encoder := json.NewEncoder(body)
 	err := encoder.Encode(struct {
-		FromAddress string  `json:"fromAddress"`
-		ToAddress   string  `json:"toAddress"`
-		Amount      float64 `json:"amount,string"`
+		FromAddress string `json:"fromAddress"`
+		ToAddress   string `json:"toAddress"`
+		// Amount      float64 `json:"amount,string"`
+		Amount string `json:"amount"`
 	}{
 		FromAddress: fromAddr,
 		ToAddress:   toAdddr,
@@ -136,12 +143,41 @@ func (cli *ClimaticClient) PostTransaction(fromAddr, toAdddr string, amt float64
 		return err
 	}
 
-	req, err := http.NewRequest(
-		"POST", fmt.Sprintf("%s/transactions", cli.apiAddr), body,
+	res, err := cli.httpClient.Post(
+		fmt.Sprintf("%s/api/transactions", cli.apiAddr), "application/json", body,
 	)
 	if err != nil {
 		return err
 	}
+	defer res.Body.Close()
+
+	if res.StatusCode >= 400 {
+		apiErr := map[string]interface{}{}
+		decoder := json.NewDecoder(res.Body)
+		if err = decoder.Decode(&apiErr); err != nil {
+			return errors.Errorf("API error: %d", res.StatusCode)
+		}
+		buf, err := json.Marshal(apiErr["error"])
+		if err != nil {
+			return errors.Errorf("API error: %d", res.StatusCode)
+		}
+
+		return errors.New(string(buf))
+	}
+
+	return nil
+}
+
+// Create creates Jobcoins for the given address.
+func (cli *ClimaticClient) Create(addr string) error {
+	req, err := http.NewRequest("POST", fmt.Sprintf("%s/create", cli.apiAddr), nil)
+	if err != nil {
+		return err
+	}
+	form := url.Values{}
+	form.Add("address", addr)
+	req.PostForm = form
+	req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
 
 	res, err := cli.httpClient.Do(req)
 	if err != nil {
@@ -150,18 +186,10 @@ func (cli *ClimaticClient) PostTransaction(fromAddr, toAdddr string, amt float64
 	defer res.Body.Close()
 
 	if res.StatusCode >= 400 {
-		apiErr := &struct {
-			error string
-		}{}
-		decoder := json.NewDecoder(res.Body)
-		if err != nil {
-			return errors.New("API error")
-		}
-		if err = decoder.Decode(apiErr); err != nil {
-			return errors.New("API error")
-		}
+		b, _ := ioutil.ReadAll(res.Body)
+		fmt.Println(string(b))
 
-		return errors.New(apiErr.error)
+		return errors.Errorf("API error: %d", res.StatusCode)
 	}
 
 	return nil
