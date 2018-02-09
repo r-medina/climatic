@@ -327,6 +327,8 @@ func (mxr *Mixer) updateRemaining(m *mix, addr string) (bool, error) {
 		l.Printf("done mixing %v", addr)
 		return true, nil
 	}
+	m.remaining = remaining
+	l.Printf("%v has %v remaining", addr, remaining)
 
 	return false, nil
 }
@@ -339,6 +341,9 @@ func (mxr *Mixer) collectFee(m *mix, addr string) error {
 	if mxr.fee.Cmp(m.remaining) == 1 { // mxr.fee > m.remaining
 		fee = m.remaining
 		l.Printf("reduced fee: %f", fee)
+	}
+	if fee.Cmp(big.NewFloat(0)) == 0 {
+		return nil
 	}
 
 	// send fee from deposit address to mixer address

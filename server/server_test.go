@@ -1,11 +1,13 @@
 package server
 
 import (
+	"errors"
 	"math/big"
 	"testing"
 
 	"github.com/r-medina/climatic"
 	"github.com/r-medina/climatic/jobcoin"
+	"github.com/r-medina/climatic/jobcoin/jctest"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -119,7 +121,7 @@ func TestMakeMix(t *testing.T) {
 				},
 				"c": {
 					usrAddrs:  []string{"u3"},
-					remaining: parseFloat("2."),
+					remaining: parseFloat("2.00"),
 				},
 			},
 		},
@@ -137,6 +139,125 @@ func TestMakeMix(t *testing.T) {
 			mxr.makeMix(test.mixReqs)
 
 			require.Equal(test.want, mxr.outstanding, "ending state equal")
+		})
+	}
+}
+
+func TestUpdateRemaining(t *testing.T) {
+	t.Parallel()
+
+	require := assert.New(t) // this is not working as expected
+	parseFloat := makeParseFloat(t)
+
+	tests := []struct {
+		remaining *big.Float
+		err       error
+		del       bool
+	}{
+		{remaining: parseFloat("1"), del: false},
+		{remaining: parseFloat("0"), del: true},
+		{err: errors.New("some error"), del: false},
+	}
+
+	for _, test := range tests {
+		t.Run("", func(t *testing.T) {
+			jcClient := &jctest.MockClient{}
+			mxr, err := NewMixer(WithJobcoinClient(jcClient))
+			require.NoError(err)
+
+			jcClient.AddrInfo = func() (*jobcoin.AddressInfo, error) {
+				var addrInfo *jobcoin.AddressInfo
+				if test.remaining != nil {
+					addrInfo = &jobcoin.AddressInfo{
+						Balance: test.remaining.String(),
+					}
+				}
+				return addrInfo, test.err
+			}
+
+			m := &mix{}
+			del, err := mxr.updateRemaining(m, "")
+			require.Equal(test.err, err)
+			require.Equal(test.del, del)
+			if test.err != nil {
+				require.Equal(test.remaining, m.remaining)
+			}
+		})
+	}
+
+}
+
+func TestCollectFee(t *testing.T) {
+	t.Parallel()
+
+	require := assert.New(t) // this is not working as expected
+	parseFloat := makeParseFloat(t)
+
+	tests := []struct {
+		fee  *big.Float
+		m    *mix
+		err  error
+		want *mix
+	}{
+		{
+			fee:  parseFloat("3"),
+			m:    &mix{remaining: parseFloat("10")},
+			want: &mix{remaining: parseFloat("7."), feePaid: true},
+		},
+
+		{
+			fee:  parseFloat("3"),
+			m:    &mix{remaining: parseFloat("2")},
+			want: &mix{remaining: big.NewFloat(0), feePaid: true},
+		},
+
+		{
+			fee:  parseFloat("0"),
+			m:    &mix{remaining: parseFloat("2")},
+			want: &mix{remaining: parseFloat("2")},
+		},
+
+		{
+			fee:  parseFloat("100"),
+			m:    &mix{remaining: parseFloat("0")},
+			want: &mix{remaining: parseFloat("0"), feePaid: false},
+		},
+
+		{
+			fee:  parseFloat("3"),
+			m:    &mix{remaining: parseFloat("10")},
+			err:  errors.New("err"),
+			want: &mix{remaining: parseFloat("10"), feePaid: false},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run("", func(t *testing.T) {
+			jcClient := &jctest.MockClient{}
+			mxr, err := NewMixer(
+				WithFee(test.fee),
+				WithJobcoinClient(jcClient),
+			)
+			require.NoError(err)
+
+			if err := test.err; err != nil {
+				jcClient.Post = func() error {
+					return err
+				}
+			}
+
+			err = mxr.collectFee(test.m, "addr")
+			if test.err != nil {
+				require.Equal(test.err, err)
+			}
+
+			// have to test it a little more hands on bc big.Float
+			// doesn't play great with equality checking
+
+			want, _ := test.want.remaining.Float64()
+			got, _ := test.m.remaining.Float64()
+			require.InDelta(want, got, 0)
+			require.Equal(test.want.feePaid, test.m.feePaid)
 		})
 	}
 }
