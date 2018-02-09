@@ -23,19 +23,35 @@ func init() { rand.Seed(time.Now().UTC().UnixNano()) }
 
 // Mixer implements the mixer interface and is a Jobcoin mixer.
 type Mixer struct {
+	// addr is the address at which to collect fees
 	addr string
 
+	// jcClient client for interacting with Jobcoin API
 	jcClient jobcoin.Client
-	ds       Datastore
+	// ds is the internal datastore for saving registered user addresses and
+	// deposit addresses
+	ds Datastore
 
-	fee           *big.Float
+	// fee is how much fee is charged per deposit.
+	// There is a buggy edgecase, however, where if a new deposit happens
+	// after a failed attempt to collect a fee, we may only collect a fee on
+	// the latter oone.
+	fee *big.Float
+	// lastSeenTxIdx keeps track of the transaction that the mixer saw.
+	// This is useful for the polling loop so it doesn't repeat transactions
+	// it has mixed.
 	lastSeenTxIdx int
 
+	// outstanding maps deposit addresses to user addresses, amount
+	// remaining, and if the fee was paid
 	outstanding map[string]*mix
 	mtx         sync.Mutex
 
+	// pollCfg configures the polling interval time
 	pollCfg PollConfig
-	mixCfg  MixConfig
+	// mixCfg configures the mixing interval times as well as the minimum
+	// and maxiumum amounts sent
+	mixCfg MixConfig
 
 	log grpclog.Logger
 }
@@ -235,6 +251,7 @@ func (mxr *Mixer) makeMix(mixReqs []mixRequest) {
 		m, ok := mxr.outstanding[mixReq.tx.ToAddress]
 		if ok {
 			m.remaining.Add(m.remaining, amt) // m.remaining += mixReq.tx.Amount
+			m.feePaid = false
 			continue
 		}
 
