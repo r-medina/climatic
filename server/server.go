@@ -347,7 +347,7 @@ func (mxr *Mixer) collectFee(m *mix, addr string) error {
 	}
 
 	// send fee from deposit address to mixer address
-	err := mxr.jcClient.PostTransaction(addr, mxr.addr, fee.String())
+	err := mxr.jcClient.PostTransaction(addr, mxr.addr, climatic.Ftos(fee))
 	if err != nil {
 		return err
 	}
@@ -374,7 +374,7 @@ func (mxr *Mixer) sendMix(m *mix, addr, usrAddr string) error {
 		// mixed, it will work due to the updated remaining amount.
 
 		l.Printf("mixing from %v to %v with amount %v", addr, usrAddr, amt)
-		err := mxr.jcClient.PostTransaction(addr, usrAddr, amt.String())
+		err := mxr.jcClient.PostTransaction(addr, usrAddr, climatic.Ftos(amt))
 		if err != nil {
 			return err
 		}
