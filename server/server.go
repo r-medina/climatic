@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"math/big"
 	"math/rand"
 	"os"
 	"sync"
@@ -27,7 +28,7 @@ type Mixer struct {
 	jcClient jobcoin.Client
 	ds       Datastore
 
-	fee           float64
+	fee           *big.Float
 	lastSeenTxIdx int
 
 	outstanding map[string]*mix
@@ -83,7 +84,7 @@ func WithAddress(addr string) Option {
 }
 
 // WithFee determines the fee that the mixer will take for mixing
-func WithFee(fee float64) Option {
+func WithFee(fee *big.Float) Option {
 	return func(mxr *Mixer) {
 		mxr.fee = fee
 	}
@@ -216,19 +217,29 @@ func (mxr *Mixer) poll() error {
 // makeMix takes mix requests and adds them to the queue of Jobcoins to be mixed.
 // This function was broken out for testing purposes.
 func (mxr *Mixer) makeMix(mixReqs []mixRequest) {
+	l := mxr.log
+
 	mxr.mtx.Lock()
 	defer mxr.mtx.Unlock()
 
 	for _, mixReq := range mixReqs {
+		amt, err := climatic.ParseFloat(mixReq.tx.Amount)
+		if err != nil {
+			l.Printf(
+				"could not parse transaction amount %q in %s: %v",
+				mixReq.tx.Amount, mixReq.tx.ToAddress, err,
+			)
+			continue
+		}
 		m, ok := mxr.outstanding[mixReq.tx.ToAddress]
 		if ok {
-			m.remaining += mixReq.tx.Amount
+			m.remaining.Add(m.remaining, amt) // m.remaining += mixReq.tx.Amount
 			continue
 		}
 
 		mxr.outstanding[mixReq.tx.ToAddress] = &mix{
 			usrAddrs:  mixReq.usrAddrs,
-			remaining: mixReq.tx.Amount,
+			remaining: amt,
 		}
 	}
 }
@@ -278,7 +289,7 @@ func (mxr *Mixer) mix() error {
 
 	// prevents a class of rounding error
 	defer func() {
-		del, err := mxr.updateRemaining(addr, m)
+		del, err := mxr.updateRemaining(m, addr)
 		if err != nil {
 			l.Printf("failed to update remaining: %v", err)
 		}
@@ -288,12 +299,12 @@ func (mxr *Mixer) mix() error {
 	}()
 
 	// collect fee
-	if mxr.fee == 0 {
+	if mxr.fee.Cmp(big.NewFloat(0)) == 0 {
 		m.feePaid = true
 	}
 	if !m.feePaid {
 		l.Printf("collecting fee")
-		if err := mxr.getFee(m, addr); err != nil {
+		if err := mxr.collectFee(m, addr); err != nil {
 			return err
 		}
 	}
@@ -303,7 +314,7 @@ func (mxr *Mixer) mix() error {
 
 // updateRemaining gets the API's view of the remaining balance and updates
 // it. It also returns of the mix request should be deleted.
-func (mxr *Mixer) updateRemaining(addr string, m *mix) (bool, error) {
+func (mxr *Mixer) updateRemaining(m *mix, addr string) (bool, error) {
 	l := mxr.log
 
 	remaining, err := mxr.getRemaining(addr)
@@ -311,7 +322,7 @@ func (mxr *Mixer) updateRemaining(addr string, m *mix) (bool, error) {
 		l.Printf("failed to get remaining: %v", err)
 		return false, err
 	}
-	if remaining == 0 {
+	if remaining.Cmp(big.NewFloat(0)) == 0 { // remaining == 0
 		l.Printf("done mixing %v", addr)
 		return true, nil
 	}
@@ -319,24 +330,24 @@ func (mxr *Mixer) updateRemaining(addr string, m *mix) (bool, error) {
 	return false, nil
 }
 
-func (mxr *Mixer) getFee(m *mix, addr string) error {
+func (mxr *Mixer) collectFee(m *mix, addr string) error {
 	l := mxr.log
 
 	// if the fee is larger than the amount to be mixed, just use the remaining amount
 	fee := mxr.fee
-	if mxr.fee > m.remaining {
+	if mxr.fee.Cmp(m.remaining) == 1 { // mxr.fee > m.remaining
 		fee = m.remaining
 		l.Printf("reduced fee: %f", fee)
 	}
 
 	// send fee from deposit address to mixer address
-	err := mxr.jcClient.PostTransaction(addr, mxr.addr, fee)
+	err := mxr.jcClient.PostTransaction(addr, mxr.addr, fee.String())
 	if err != nil {
 		return err
 	}
 
 	m.feePaid = true
-	m.remaining -= fee
+	m.remaining.Sub(m.remaining, fee) // m.remaining -= fee
 
 	return nil
 }
@@ -345,40 +356,44 @@ func (mxr *Mixer) sendMix(m *mix, addr, usrAddr string) error {
 	l := mxr.log
 
 	// if the amount is greater than the total remaining, only mix the remaining
-	amt := mxr.mixCfg.amount()
-	if amt > m.remaining {
+	amt := big.NewFloat(mxr.mixCfg.amount())
+	if amt.Cmp(m.remaining) == 1 { // amt > m.remaining
 		amt = m.remaining
 	}
 
-	if amt != 0 {
+	if amt.Cmp(big.NewFloat(0)) != 0 { // amt != 0
 		// There's a small chance that the rest of this function will
 		// fail due to a discrepancy between our internal accounting and
 		// the balance on the server. The next time this address is
 		// mixed, it will work due to the updated remaining amount.
 
-		l.Printf("mixing from %v to %v with amount %s", addr, usrAddr, climatic.Ftos(amt))
-		err := mxr.jcClient.PostTransaction(addr, usrAddr, amt)
+		l.Printf("mixing from %v to %v with amount %v", addr, usrAddr, amt)
+		err := mxr.jcClient.PostTransaction(addr, usrAddr, amt.String())
 		if err != nil {
 			return err
 		}
-		m.remaining -= amt
+		m.remaining.Sub(m.remaining, amt) // m.remaining -= amt
 	}
 
 	return nil
 }
 
-func (mxr *Mixer) getRemaining(addr string) (float64, error) {
+func (mxr *Mixer) getRemaining(addr string) (*big.Float, error) {
 	addrInfo, err := mxr.jcClient.GetAddressInfo(addr)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	return addrInfo.Balance, nil
+	remaining, err := climatic.ParseFloat(addrInfo.Balance)
+	if err != nil {
+		return nil, err
+	}
+	return remaining, nil
 
 }
 
 type mix struct {
 	usrAddrs  []string
-	remaining float64
+	remaining *big.Float
 	feePaid   bool
 }
 

@@ -20,14 +20,14 @@ type Client interface {
 	// GetTransactions returns all the transactions in the jobcoin history.
 	GetTransactions() ([]*Transaction, error)
 	// PostTransaction sends jobcoin.
-	PostTransaction(fromAddr, toAddr string, amt float64) error
+	PostTransaction(fromAddr, toAddr, amt string) error
 	// Create creates 50 Jobcons out of thin air.
 	Create(addr string) error
 }
 
 // AddressInfo contains all the data relating to a Jobcoin address.
 type AddressInfo struct {
-	Balance      float64        `json:"balance,string"`
+	Balance      string         `json:"balance"`
 	Transactions []*Transaction `json:"transactions"`
 }
 
@@ -36,7 +36,7 @@ type Transaction struct {
 	Timestamp   time.Time `json:"time,string"`
 	FromAddress string    `json:"fromAddress"`
 	ToAddress   string    `json:"toAddress"`
-	Amount      float64   `json:"amount,string"`
+	Amount      string    `json:"amount"`
 }
 
 // ClimaticClient uses the https://jobcoin.gemini.com/climatic/api.
@@ -123,13 +123,13 @@ func (cli *ClimaticClient) GetTransactions() ([]*Transaction, error) {
 }
 
 // PostTransaction sends jobcoin.
-func (cli *ClimaticClient) PostTransaction(fromAddr, toAdddr string, amt float64) error {
+func (cli *ClimaticClient) PostTransaction(fromAddr, toAdddr, amt string) error {
 	body := &bytes.Buffer{}
 	encoder := json.NewEncoder(body)
 	err := encoder.Encode(struct {
-		FromAddress string  `json:"fromAddress"`
-		ToAddress   string  `json:"toAddress"`
-		Amount      float64 `json:"amount,string"`
+		FromAddress string `json:"fromAddress"`
+		ToAddress   string `json:"toAddress"`
+		Amount      string `json:"amount"`
 	}{
 		FromAddress: fromAddr,
 		ToAddress:   toAdddr,
@@ -153,12 +153,8 @@ func (cli *ClimaticClient) PostTransaction(fromAddr, toAdddr string, amt float64
 		if err = decoder.Decode(&apiErr); err != nil {
 			return errors.Errorf("API error: %d", res.StatusCode)
 		}
-		buf, err := json.Marshal(apiErr["error"])
-		if err != nil {
-			return errors.Errorf("API error: %d", res.StatusCode)
-		}
 
-		return errors.New(string(buf))
+		return fmt.Errorf("%v", apiErr["error"])
 	}
 
 	return nil

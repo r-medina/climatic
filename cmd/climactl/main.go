@@ -27,7 +27,7 @@ var config struct {
 	send struct {
 		fromAddr string
 		toAddr   string
-		amt      float64
+		amt      string
 	}
 
 	addrInfo struct {
@@ -54,7 +54,7 @@ func init() {
 		PreAction(getJobcoinClient).Action(sendJobcoins)
 	send.Arg("from-addr", "address from which to send Jobcoins").Required().StringVar(&config.send.fromAddr)
 	send.Arg("to-addr", "address to which to send Jobcoins").Required().StringVar(&config.send.toAddr)
-	send.Arg("amount", "amount of Jobcoins to send").Required().FloatVar(&config.send.amt)
+	send.Arg("amount", "amount of Jobcoins to send").Required().StringVar(&config.send.amt)
 
 	addrInfo := app.Command("addr-info", "get information about an address").
 		PreAction(getJobcoinClient).Action(getAddrInfo)
@@ -100,8 +100,10 @@ func sendJobcoins(*kingpin.ParseContext) error {
 	fromAddr := config.send.fromAddr
 	toAddr := config.send.toAddr
 	amt := config.send.amt
-	fmt.Printf("sending %s Jobcoins from %v to %v\n", climatic.Ftos(amt), fromAddr, toAddr)
-	err := config.jcClient.PostTransaction(fromAddr, toAddr, amt)
+	_, err := climatic.ParseFloat(config.send.amt)
+	app.FatalIfError(err, "could not parse amount")
+	fmt.Printf("sending %s Jobcoins from %v to %v\n", amt, fromAddr, toAddr)
+	err = config.jcClient.PostTransaction(fromAddr, toAddr, amt)
 	app.FatalIfError(err, "could not send jobcoins")
 
 	return nil

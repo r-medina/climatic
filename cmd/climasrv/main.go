@@ -18,7 +18,8 @@ import (
 
 var config struct {
 	tcpAddr   *net.TCPAddr
-	fee       float64
+	fee       string
+	feeAddr   string
 	pollCfg   server.PollConfig
 	mixCfg    server.MixConfig
 	pprofAddr *net.TCPAddr
@@ -33,7 +34,8 @@ var (
 
 func init() {
 	app.Flag("tcp-addr", "address for TCP listener").Default("").TCPVar(&config.tcpAddr)
-	app.Flag("fee", "fee to charge people using the service").FloatVar(&config.fee)
+	app.Flag("fee", "fee to charge people using the service").StringVar(&config.fee)
+	app.Flag("fee-addr", "jobcoin address to collect fees").StringVar(&config.feeAddr)
 
 	app.Flag("poll-delay", "mean of delay between polls to jobcoin API").
 		Default(str(server.DefaultPollConfig.MeanDelay)).
@@ -89,12 +91,22 @@ func main() {
 }
 
 func runServer(_ *kingpin.ParseContext) error {
-	mxr, err := server.NewMixer(
+	opts := []server.Option{
 		server.WithLogger(l),
-		server.WithFee(config.fee),
 		server.WithPollConfig(config.pollCfg),
 		server.WithMixConfig(config.mixCfg),
-	)
+	}
+	if config.fee != "" {
+		fee, err := climatic.ParseFloat(config.fee)
+		fatalIfError(err, "failed to parse fee")
+		opts = append(opts, server.WithFee(fee))
+
+	}
+	if config.feeAddr != "" {
+		opts = append(opts, server.WithAddress(config.feeAddr))
+	}
+
+	mxr, err := server.NewMixer()
 	fatalIfError(err, "instantiating mixer failed")
 
 	lis, err := net.Listen("tcp", config.tcpAddr.String())

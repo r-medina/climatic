@@ -4,13 +4,16 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"reflect"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func TestGetAddressInfo(t *testing.T) {
 	t.Parallel()
+
+	require := assert.New(t) // this is not working as expected
 
 	tests := []struct {
 		desc     string
@@ -18,7 +21,7 @@ func TestGetAddressInfo(t *testing.T) {
 	}{
 		{desc: "empty"},
 		{desc: "balance, no txs", addrInfo: AddressInfo{
-			Balance: 2.0,
+			Balance: "2.0",
 		}},
 	}
 
@@ -38,19 +41,16 @@ func TestGetAddressInfo(t *testing.T) {
 			testClient := NewClimaticClient(WithAPIAddress(server.URL))
 
 			addrInfo, err := testClient.GetAddressInfo("")
-			if err != nil {
-				t.Fatalf("unexpected error getting address info: %v", err)
-			}
-
-			if want, got := &test.addrInfo, addrInfo; !reflect.DeepEqual(got, want) {
-				t.Fatalf("expected %v, got %v", want, got)
-			}
+			require.NoError(err, "failed GetAddressInfo")
+			require.Equal(addrInfo, &test.addrInfo, "unexpected output")
 		})
 	}
 }
 
 func TestGetTransactions(t *testing.T) {
 	t.Parallel()
+
+	require := assert.New(t) // this is not working as expected
 
 	makeTime := func(timeStr string) time.Time {
 		tm, err := time.Parse(time.RFC3339, timeStr)
@@ -72,12 +72,12 @@ func TestGetTransactions(t *testing.T) {
 		{desc: "2 txs", txs: []*Transaction{{
 			Timestamp: makeTime("2014-04-22T13:10:01.210Z"),
 			ToAddress: "BobsAddress",
-			Amount:    50.35,
+			Amount:    "50.35",
 		}, {
 			Timestamp:   makeTime("2014-04-23T18:25:43.511Z"),
 			FromAddress: "BobsAddress",
 			ToAddress:   "AlicesAddress",
-			Amount:      30.1,
+			Amount:      "30.1",
 		}}},
 	}
 
@@ -86,10 +86,7 @@ func TestGetTransactions(t *testing.T) {
 			server := httptest.NewServer(
 				http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
 					body, err := json.Marshal(test.txs)
-					if err != nil {
-						t.Fatalf("unexpected error marshalling body: %v", err)
-					}
-
+					require.NoError(err, "failed to marshal body")
 					_, _ = rw.Write(body)
 
 				}),
@@ -97,19 +94,17 @@ func TestGetTransactions(t *testing.T) {
 			testClient := NewClimaticClient(WithAPIAddress(server.URL))
 
 			txs, err := testClient.GetTransactions()
-			if err != nil {
-				t.Fatalf("unexpected error getting transactions: %v", err)
-			}
+			require.NoError(err, "failed calling GetTransactions")
+			require.Equal(txs, test.txs, "expected same output")
 
-			if want, got := test.txs, txs; !reflect.DeepEqual(got, want) {
-				t.Fatalf("expected %+v, got %+v", want[0].Timestamp, got[0].Timestamp)
-			}
 		})
 	}
 }
 
 func TestPostTransaction(t *testing.T) {
 	t.Parallel()
+
+	require := assert.New(t) // this is not working as expected
 
 	tests := []struct {
 		desc   string
@@ -123,19 +118,11 @@ func TestPostTransaction(t *testing.T) {
 		t.Run(test.desc, func(t *testing.T) {
 			server := httptest.NewServer(
 				http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
-					var val interface{}
+					var body []byte
 					if test.errStr == "" {
-						val = map[string]string{"status": "OK"}
+						body = []byte(`{"status":"OK"}`)
 					} else {
-						val = struct{ error string }{error: test.errStr}
-					}
-
-					body, err := json.Marshal(val)
-					if err != nil {
-						t.Fatalf("unexpected error marshalling body: %v", err)
-					}
-
-					if test.errStr == "" {
+						body = []byte(`{"error":"` + test.errStr + `"}`)
 						rw.WriteHeader(422)
 					}
 
@@ -144,11 +131,9 @@ func TestPostTransaction(t *testing.T) {
 			)
 			testClient := NewClimaticClient(WithAPIAddress(server.URL))
 
-			err := testClient.PostTransaction("a", "b", 1.)
+			err := testClient.PostTransaction("a", "b", "1.")
 			if err != nil {
-				if want, got := test.errStr, err.Error(); !reflect.DeepEqual(got, want) {
-					t.Fatalf("expected %v, got %v", want, got)
-				}
+				require.Equal(test.errStr, err.Error(), "unexpected error")
 			}
 		})
 	}

@@ -1,15 +1,20 @@
 package server
 
 import (
+	"math/big"
 	"testing"
 
+	"github.com/r-medina/climatic"
 	"github.com/r-medina/climatic/jobcoin"
 
-	"github.com/stretchr/testify/require"
+	"github.com/stretchr/testify/assert"
 )
 
-func TestMakeMiix(t *testing.T) {
-	require := require.New(t) // this is not working as expected
+func TestMakeMix(t *testing.T) {
+	t.Parallel()
+
+	require := assert.New(t) // this is not working as expected
+	parseFloat := makeParseFloat(t)
 
 	tests := []struct {
 		desc        string
@@ -32,14 +37,14 @@ func TestMakeMiix(t *testing.T) {
 			mixReqs: []mixRequest{{
 				tx: &jobcoin.Transaction{
 					ToAddress: "b",
-					Amount:    2.,
+					Amount:    "2.",
 				},
 				usrAddrs: []string{"u1", "u2"}},
 			},
 			want: map[string]*mix{
 				"b": {
 					usrAddrs:  []string{"u1", "u2"},
-					remaining: 2.,
+					remaining: parseFloat("2."),
 				},
 			},
 		},
@@ -50,13 +55,13 @@ func TestMakeMiix(t *testing.T) {
 				{
 					tx: &jobcoin.Transaction{
 						ToAddress: "b",
-						Amount:    2.,
+						Amount:    "2.",
 					},
 					usrAddrs: []string{"u1", "u2"},
 				}, {
 					tx: &jobcoin.Transaction{
 						ToAddress: "b",
-						Amount:    2.,
+						Amount:    "2.",
 					},
 					usrAddrs: []string{"u1", "u2"},
 				},
@@ -64,7 +69,7 @@ func TestMakeMiix(t *testing.T) {
 			want: map[string]*mix{
 				"b": {
 					usrAddrs:  []string{"u1", "u2"},
-					remaining: 4.,
+					remaining: parseFloat("4."),
 				},
 			},
 		},
@@ -74,20 +79,20 @@ func TestMakeMiix(t *testing.T) {
 			outstanding: map[string]*mix{
 				"b": {
 					usrAddrs:  []string{"u1", "u2"},
-					remaining: 2.,
+					remaining: parseFloat("2."),
 				},
 			},
 			mixReqs: []mixRequest{{
 				tx: &jobcoin.Transaction{
 					ToAddress: "b",
-					Amount:    2.,
+					Amount:    "2.",
 				},
 				usrAddrs: []string{"u1", "u2"},
 			}},
 			want: map[string]*mix{
 				"b": {
 					usrAddrs:  []string{"u1", "u2"},
-					remaining: 4.,
+					remaining: parseFloat("4."),
 				},
 			},
 		},
@@ -97,24 +102,24 @@ func TestMakeMiix(t *testing.T) {
 			outstanding: map[string]*mix{
 				"b": {
 					usrAddrs:  []string{"u1", "u2"},
-					remaining: 2.,
+					remaining: parseFloat("2."),
 				},
 			},
 			mixReqs: []mixRequest{{
 				tx: &jobcoin.Transaction{
 					ToAddress: "c",
-					Amount:    2.,
+					Amount:    "2.",
 				},
 				usrAddrs: []string{"u3"},
 			}},
 			want: map[string]*mix{
 				"b": {
 					usrAddrs:  []string{"u1", "u2"},
-					remaining: 2.,
+					remaining: parseFloat("2."),
 				},
 				"c": {
 					usrAddrs:  []string{"u3"},
-					remaining: 3.,
+					remaining: parseFloat("2."),
 				},
 			},
 		},
@@ -131,7 +136,22 @@ func TestMakeMiix(t *testing.T) {
 
 			mxr.makeMix(test.mixReqs)
 
-			require.Equal(mxr.outstanding, test.want, "ending state equal")
+			require.Equal(test.want, mxr.outstanding, "ending state equal")
 		})
+	}
+}
+
+// needed to get right precision
+func makeParseFloat(t *testing.T) func(v string) *big.Float {
+	t.Helper()
+
+	require := assert.New(t) // this is not working as expected
+
+	return func(v string) *big.Float {
+		t.Helper()
+
+		f, err := climatic.ParseFloat(v)
+		require.NoError(err, "failed parsing float")
+		return f
 	}
 }
