@@ -106,8 +106,9 @@ func runServer(_ *kingpin.ParseContext) error {
 		opts = append(opts, server.WithAddress(config.feeAddr))
 	}
 
-	mxr, err := server.NewMixer()
+	mxr, err := server.NewMixer(opts...)
 	fatalIfError(err, "instantiating mixer failed")
+	l.Printf("mixer: %+v\n", mxr)
 
 	lis, err := net.Listen("tcp", config.tcpAddr.String())
 	fatalIfError(err, "starting TCP listener on %s failed", config.tcpAddr)

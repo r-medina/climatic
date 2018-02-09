@@ -53,6 +53,7 @@ func NewMixer(opts ...Option) (*Mixer, error) {
 		jcClient:    jobcoin.NewClimaticClient(),
 		ds:          newMemDS(),
 		addr:        addr.String(),
+		fee:         big.NewFloat(0),
 		outstanding: map[string]*mix{},
 		pollCfg:     DefaultPollConfig,
 		mixCfg:      DefaultMixConfig,
