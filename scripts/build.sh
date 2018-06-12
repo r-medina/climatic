@@ -15,7 +15,7 @@ for bin in $BINS; do
     for arch in $ARCHS; do
 	for os in $OSS; do
 	    echo building $os binary on $arch...
-	    go build -o bin/$bin.$os-$arch ./cmd/$bin/*.go
+	    GOOS=$os GOARCH=$arch go build -o bin/$bin.$os-$arch ./cmd/$bin/*.go
 	done
     done
 done
